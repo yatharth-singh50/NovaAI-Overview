@@ -1,0 +1,8 @@
+TO RUN NOVA, YOU MUST USE:
+`npm run dev -- --host`
+for the frontend
+
+FOR PHONE, TYPE THE NETWORK LINK GENERATED IN TERMINAL
+
+TO RUN THE BACKEND/BRAIN FROM THE ROOT DIRECTORY, USE
+uvicorn server:app --host 0.0.0.0 --port 8000

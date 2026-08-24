@@ -1,0 +1,12 @@
+ollama
+ddgs
+requests
+beautifulsoup4
+customtkinter
+pillow
+matplotlib
+psutil
+GPUtil
+setuptools
+pyautogui
+opencv-python
