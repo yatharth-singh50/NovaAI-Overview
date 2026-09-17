@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="nova-frontend/src/assets/NovaAI.png" alt="Nova Logo" width="180"/>
+</p>
+
 # Nova — Local Desktop AI Assistant
 
 Nova is a local-first desktop AI assistant that combines a Python backend, Ollama-hosted local models, a tool-calling agent, and a desktop UI for chat, file understanding, and basic OS/browser automation. The repository is a working prototype for running AI assistance entirely on a local machine while persisting chat/session state and providing a user-facing app shell for desktop use.
