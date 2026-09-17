@@ -1,2 +1,4 @@
 memory.txt
 nova_chats.db
+__pycache__/
+*.pyc
