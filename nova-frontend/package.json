@@ -29,35 +29,36 @@
       "main.js"
     ],
     "extraResources": [
-  {
-    "from": "../server.py",
-    "to": "server.py"
-  },
-  {
-    "from": "../agent.py",
-    "to": "agent.py"
-  },
-  {
-    "from": "../tools.py",
-    "to": "tools.py"
-  },
-  {
-    "from": "../templates",
-    "to": "templates"
-  },
-  {
-    "from": "../nova_chats.db",
-    "to": "nova_chats.db"
-  },
-  {
-    "from": "dist",
-    "to": "dist"
-  }
-]
+      {
+        "from": "../server.py",
+        "to": "server.py"
+      },
+      {
+        "from": "../agent.py",
+        "to": "agent.py"
+      },
+      {
+        "from": "../tools.py",
+        "to": "tools.py"
+      },
+      {
+        "from": "../templates",
+        "to": "templates"
+      },
+      {
+        "from": "../nova_chats.db",
+        "to": "nova_chats.db"
+      },
+      {
+        "from": "dist",
+        "to": "dist"
+      }
+    ]
   },
   "dependencies": {
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.18.0",
+    "motion": "^13.4.5",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

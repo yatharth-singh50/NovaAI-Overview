@@ -7,6 +7,8 @@ interface ChatInputProps {
   onChange: (val: string) => void;
   onSend: (imageB64?: string, pdfInfo?: { b64: string; name: string }, isSuperNova?: boolean) => void;
   isStreaming?: boolean;
+  modelTier: 'Nova' | 'SuperNova';
+  setModelTier: (tier: 'Nova' | 'SuperNova') => void;
 }
 
 const MODELS = [
@@ -41,7 +43,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
 
   const activeModel = MODELS.find((m) => m.id === modelTier)!;
 
-  // Auto-resize textarea
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -49,7 +50,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
     ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
   }, [value]);
 
-  // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -60,7 +60,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Global drag and drop
   useEffect(() => {
     const handleDragOver = (e: DragEvent) => { e.preventDefault(); setIsDraggingGlobally(true); };
     const handleDragLeave = (e: DragEvent) => {
@@ -116,7 +115,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
 
   const handleLocalSend = () => {
     if ((value.trim() || attachedImage || attachedPdf) && !isStreaming) {
-      // Pass attachedPdf instead of attachedPdf?.b64
       onSend(attachedImage || undefined, attachedPdf || undefined, modelTier === 'SuperNova');
       setAttachedImage(null);
       setAttachedPdf(null);
@@ -131,7 +129,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
 
   return (
     <>
-      {/* Global drop overlay */}
       {isDraggingGlobally && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0a1020]/80 backdrop-blur-sm border-2 border-dashed border-[#3b82f6]">
           <div className="flex flex-col items-center pointer-events-none">
@@ -149,7 +146,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
 
           <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
 
-          {/* Attachment previews */}
           <div className="flex gap-3 px-1">
             {attachedImage && (
               <div className="relative inline-block mb-3 w-20 h-20">
@@ -183,7 +179,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
 
           <div className="flex items-center justify-between border-t border-[#0f1929]/60 mt-2 pt-2">
 
-            {/* ── Model dropdown ── */}
             <div ref={dropdownRef} className="relative">
               <button
                 onClick={() => setDropdownOpen((o) => !o)}
@@ -219,7 +214,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
                 />
               </button>
 
-              {/* Dropdown menu — opens upward */}
               {dropdownOpen && (
                 <div
                   className="absolute left-0 bottom-full mb-2 w-52 rounded-2xl overflow-hidden z-50"
@@ -230,7 +224,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
                     animation: 'nova-fade-in 0.15s ease-out both',
                   }}
                 >
-                  {/* Header label */}
                   <div className="px-3.5 pt-3 pb-2">
                     <p className="text-[10px] font-bold tracking-widest uppercase text-[#2a4060]">
                       Select Model
@@ -256,7 +249,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
                           if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
                         }}
                       >
-                        {/* Icon badge */}
                         <div
                           className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
                           style={{
@@ -271,7 +263,6 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
                           <Icon size={14} strokeWidth={2} style={{ color: isActive ? model.iconColor : '#3a5070' }} />
                         </div>
 
-                        {/* Label + description */}
                         <div className="flex-1 min-w-0">
                           <p
                             className="text-[13px] font-semibold leading-tight"
@@ -284,15 +275,12 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
                           </p>
                         </div>
 
-                        {/* Active checkmark */}
                         {isActive && (
                           <Check size={13} strokeWidth={2.5} style={{ color: model.iconColor, flexShrink: 0 }} />
                         )}
                       </button>
                     );
                   })}
-
-                  {/* Bottom padding */}
                   <div className="h-1.5" />
                 </div>
               )}
@@ -321,6 +309,11 @@ export default function ChatInput({ value, onChange, onSend, isStreaming = false
             </div>
           </div>
         </div>
+
+        {/* Disclaimer appended below the input field */}
+        <p className="text-center text-[10px] font-medium text-[#4a6080] mt-3 tracking-wide">
+          Nova can make mistakes and hallucinate, especially when using lower parameter models. Always verify important information.
+        </p>
       </div>
     </>
   );

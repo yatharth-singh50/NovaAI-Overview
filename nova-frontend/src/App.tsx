@@ -28,10 +28,11 @@ async function fetchNovaReply(
   isSuperNova: boolean,
   sessionId: string, 
   onChunk: (chunk: string) => void,
+  endpoint: string = '/api/chat' // Added endpoint parameter
 ): Promise<void> {
   try {
     const hostname = window.location.hostname;
-    const response = await fetch(`http://${hostname}:8000/api/chat`, {
+    const response = await fetch(`http://${hostname}:8000${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -44,7 +45,6 @@ async function fetchNovaReply(
     });
 
     if (!response.body) throw new Error("No response body received.");
-
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
 
@@ -65,8 +65,11 @@ export default function App() {
   const [sessionMessages, setSessionMessages] = useState<Record<string, Message[]>>({});
   const [sessionMemories, setSessionMemories] = useState<Record<string, string>>({});
   
-  // --- NEW: State for the Delete Confirmation Modal ---
+  const [activeTool, setActiveTool] = useState<string | null>(null);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+  
+  // FIXED: Model state lives here now so it never resets when the UI transitions
+  const [modelTier, setModelTier] = useState<'Nova' | 'SuperNova'>('Nova');
   
   const [inputValue, setInputValue] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -104,12 +107,24 @@ export default function App() {
       fetch(`http://${hostname}:8000/api/chat/${activeSessionId}`)
         .then(res => res.json())
         .then(data => {
-          const msgs = data.messages.map((m: any) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            timestamp: new Date(m.timestamp)
-          }));
+          const msgs = data.messages.map((m: any) => {
+            let loadedImage = undefined;
+            let loadedPdf = undefined;
+            if (m.attachments && Array.isArray(m.attachments)) {
+              for (const att of m.attachments) {
+                if (att.type === 'image') loadedImage = att.data;
+                if (att.type === 'file') loadedPdf = att.data;
+              }
+            }
+            return {
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.timestamp),
+              image: loadedImage,
+              pdfB64: loadedPdf
+            };
+          });
           setSessionMessages(prev => ({ ...prev, [activeSessionId]: msgs }));
         });
     }
@@ -119,6 +134,7 @@ export default function App() {
     setActiveSessionId(null);
     setStreamingContent('');
     setIsStreaming(false);
+    setActiveTool(null);
   }, []);
 
   const syncMemory = async (sessionId: string) => {
@@ -134,8 +150,8 @@ export default function App() {
     }
   };
 
-  const handleSend = async (imageB64?: string, pdfInfo?: { b64: string; name: string }, isSuperNova: boolean = false) => {
-    const text = inputValue.trim();
+const handleSend = async (imageB64?: string, pdfInfo?: { b64: string; name: string }, isSuperNova: boolean = false, overrideText?: string) => {
+    const text = overrideText || inputValue.trim();
     if (!text && !imageB64 && !pdfInfo) return;
     if (isStreaming) return;
 
@@ -144,7 +160,6 @@ export default function App() {
     const isFirstTurn = !currentSessionId;
 
     if (!currentSessionId) {
-      // Temporarily name it while the AI thinks
       const newSession = makeSession("Generating title...");
       currentSessionId = newSession.id;
       setSessions((prev) => [newSession, ...prev]);
@@ -168,9 +183,9 @@ export default function App() {
     }));
 
     setIsStreaming(true);
-    let fullReplyText = '';
+    setActiveTool(null);
+    let rawBuffer = '';
 
-    // --- NEW: Background AI Title Generation ---
     if (isFirstTurn) {
       const hostname = window.location.hostname;
       fetch(`http://${hostname}:8000/api/chat/${currentSessionId}/title`, {
@@ -180,22 +195,25 @@ export default function App() {
       })
       .then(res => res.json())
       .then(data => {
-        if (data.title) {
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: data.title } : s));
-        }
+        if (data.title) setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: data.title } : s));
       })
       .catch(err => console.error("Title generation failed", err));
     }
 
     await fetchNovaReply(text, imageB64, pdfInfo?.b64, isSuperNova, currentSessionId!, (chunk) => {
-      fullReplyText += chunk;
-      setStreamingContent(fullReplyText);
+      rawBuffer += chunk;
+      const matches = [...rawBuffer.matchAll(/\[\[TOOL_RUNNING:(.*?)\]\]/g)];
+      if (matches.length > 0) setActiveTool(matches[matches.length - 1][1]);
+      
+      const cleanText = rawBuffer.replace(/\[\[TOOL_RUNNING:.*?\]\]/g, '');
+      setStreamingContent(cleanText);
     });
 
+    const cleanFinalText = rawBuffer.replace(/\[\[TOOL_RUNNING:.*?\]\]/g, '');
     const assistantMsg: Message = {
       id: genId(),
       role: 'assistant',
-      content: fullReplyText,
+      content: cleanFinalText,
       timestamp: new Date(),
     };
 
@@ -204,58 +222,62 @@ export default function App() {
       [currentSessionId!]: [...(prev[currentSessionId!] || []), assistantMsg],
     }));
 
-    setSessions((prev) =>
-      prev.map((s) => (s.id === currentSessionId ? { ...s, preview: text || "File Upload" } : s))
-    );
-
+    setSessions((prev) => prev.map((s) => (s.id === currentSessionId ? { ...s, preview: text || "File Upload" } : s)));
     setStreamingContent('');
     setIsStreaming(false);
-    
     syncMemory(currentSessionId!);
   };
 
-  const handleEdit = (index: number, content: string) => {
+  const handleEdit = (messageId: string, content: string) => {
     if (isStreaming || !activeSessionId) return;
     setInputValue(content); 
     const currentMessages = sessionMessages[activeSessionId] || [];
-    setSessionMessages((prev) => ({
-      ...prev,
-      [activeSessionId]: currentMessages.slice(0, index), 
-    }));
-  };
-
-  const handleRegenerate = async (messageIndex: number) => {
-    if (isStreaming || !activeSessionId) return;
-
-    const currentMessages = sessionMessages[activeSessionId] || [];
-    const userMessageObj = currentMessages[messageIndex - 1]; 
-    if (!userMessageObj || userMessageObj.role !== 'user') return;
-
-    const truncatedMessages = currentMessages.slice(0, messageIndex);
+    
+    // Find exact message and truncate history from that point
+    const msgIndex = currentMessages.findIndex(m => m.id === messageId);
+    if (msgIndex === -1) return;
     
     setSessionMessages((prev) => ({
       ...prev,
-      [activeSessionId]: truncatedMessages,
+      [activeSessionId]: currentMessages.slice(0, msgIndex), 
     }));
+  };
+
+  const handleRegenerate = async () => {
+    if (isStreaming || !activeSessionId) return;
+
+    const currentMessages = sessionMessages[activeSessionId] || [];
+    
+    // Find the original user prompt dynamically
+    const lastUserMsg = [...currentMessages].reverse().find(m => m.role === 'user');
+    if (!lastUserMsg) return;
 
     setIsStreaming(true);
-    let fullReplyText = '';
+    setActiveTool(null);
+    let rawBuffer = '';
 
-    await fetchNovaReply(userMessageObj.content, userMessageObj.image, userMessageObj.pdfB64, false, activeSessionId, (chunk) => {
-      fullReplyText += chunk;
-      setStreamingContent(fullReplyText);
-    });
+    // FIXED: Use the correct model state and the new /api/chat/regenerate endpoint!
+    await fetchNovaReply(lastUserMsg.content, lastUserMsg.image, lastUserMsg.pdfB64, modelTier === 'SuperNova', activeSessionId, (chunk) => {
+      rawBuffer += chunk;
+      const matches = [...rawBuffer.matchAll(/\[\[TOOL_RUNNING:(.*?)\]\]/g)];
+      if (matches.length > 0) setActiveTool(matches[matches.length - 1][1]);
+      
+      const cleanText = rawBuffer.replace(/\[\[TOOL_RUNNING:.*?\]\]/g, '');
+      setStreamingContent(cleanText);
+    }, '/api/chat/regenerate');
 
+    const cleanFinalText = rawBuffer.replace(/\[\[TOOL_RUNNING:.*?\]\]/g, '');
     const assistantMsg: Message = {
       id: genId(),
       role: 'assistant',
-      content: fullReplyText,
+      content: cleanFinalText,
       timestamp: new Date(),
     };
 
+    // Append the new variation instead of replacing the old one
     setSessionMessages((prev) => ({
       ...prev,
-      [activeSessionId]: [...truncatedMessages, assistantMsg],
+      [activeSessionId]: [...currentMessages, assistantMsg],
     }));
 
     setStreamingContent('');
@@ -263,18 +285,14 @@ export default function App() {
     syncMemory(activeSessionId);
   };
 
-  // --- NEW: Triggers the Modal ---
   const handleDeleteSession = (id: string) => {
     setSessionToDelete(id);
   };
 
-  // --- NEW: Actually Deletes from the Database ---
   const confirmDelete = async (id: string) => {
     try {
       const hostname = window.location.hostname;
-      await fetch(`http://${hostname}:8000/api/chat/${id}`, {
-        method: 'DELETE'
-      });
+      await fetch(`http://${hostname}:8000/api/chat/${id}`, { method: 'DELETE' });
       setSessions((prev) => prev.filter((s) => s.id !== id));
       setSessionMessages((prev) => {
         const next = { ...prev };
@@ -292,23 +310,16 @@ export default function App() {
     <div className="flex h-screen w-full overflow-hidden" style={{ background: '#0d0d14', color: '#c8c8e8' }}>
       <Gradient isWelcome={isWelcome} />
       
-      {/* --- NEW: Sleek Delete Confirmation Modal --- */}
       {sessionToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-[#13131e] border border-[#2a2a50] p-6 rounded-2xl shadow-2xl max-w-sm w-full nova-fade-in">
             <h3 className="text-white text-lg font-bold mb-2">Delete Chat</h3>
             <p className="text-[#a0a0c8] text-sm mb-6">Are you sure you want to permanently delete this conversation? This cannot be undone.</p>
             <div className="flex justify-end gap-3">
-              <button 
-                onClick={() => setSessionToDelete(null)} 
-                className="px-4 py-2 rounded-lg text-sm font-medium text-[#c8c8e8] hover:bg-[#1e1e38] transition-colors"
-              >
+              <button onClick={() => setSessionToDelete(null)} className="px-4 py-2 rounded-lg text-sm font-medium text-[#c8c8e8] hover:bg-[#1e1e38] transition-colors">
                 Cancel
               </button>
-              <button 
-                onClick={() => confirmDelete(sessionToDelete)} 
-                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-red-500/80 hover:bg-red-500 transition-colors"
-              >
+              <button onClick={() => confirmDelete(sessionToDelete)} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-red-500/80 hover:bg-red-500 transition-colors">
                 Delete
               </button>
             </div>
@@ -318,14 +329,7 @@ export default function App() {
 
       <div className={`transition-all duration-300 ease-in-out h-full flex-shrink-0 overflow-hidden ${sidebarOpen ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
         <div className="w-64 h-full">
-          <Sidebar 
-            sessions={sessions} 
-            activeSessionId={activeSessionId} 
-            activeMemory={activeSessionId ? sessionMemories[activeSessionId] : ""} 
-            onNewChat={startNewChat} 
-            onSelectSession={setActiveSessionId} 
-            onDeleteSession={handleDeleteSession}
-          />
+          <Sidebar sessions={sessions} activeSessionId={activeSessionId} activeMemory={activeSessionId ? sessionMemories[activeSessionId] : ""} onNewChat={startNewChat} onSelectSession={setActiveSessionId} onDeleteSession={handleDeleteSession} />
         </div>
       </div>
       <main className="flex-1 flex flex-col min-w-0 relative">
@@ -333,18 +337,12 @@ export default function App() {
         {isWelcome ? (
           <div className="flex-1 flex flex-col justify-between items-center relative">
             <WelcomeScreen onSuggestionClick={(p) => setInputValue(p)} />
-            <ChatInput value={inputValue} onChange={setInputValue} onSend={handleSend} isStreaming={isStreaming} />
+            <ChatInput value={inputValue} onChange={setInputValue} onSend={handleSend} isStreaming={isStreaming} modelTier={modelTier} setModelTier={setModelTier} />
           </div>
         ) : (
           <>
-            <ChatArea 
-              messages={activeMessages} 
-              isStreaming={isStreaming} 
-              streamingContent={streamingContent} 
-              onRegenerateMessage={handleRegenerate}
-              onEditMessage={handleEdit}
-            />
-            <ChatInput value={inputValue} onChange={setInputValue} onSend={handleSend} isStreaming={isStreaming} />
+            <ChatArea messages={activeMessages} isStreaming={isStreaming} streamingContent={streamingContent} activeTool={activeTool} onRegenerateMessage={handleRegenerate} onEditMessage={handleEdit} onQuickReply={(text) => handleSend(undefined, undefined, modelTier === 'SuperNova', text)} />
+            <ChatInput value={inputValue} onChange={setInputValue} onSend={handleSend} isStreaming={isStreaming} modelTier={modelTier} setModelTier={setModelTier} />
           </>
         )}
       </main>

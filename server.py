@@ -1,3 +1,5 @@
+import json
+import re
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -37,17 +39,38 @@ def init_db():
                  (id TEXT PRIMARY KEY, title TEXT, updated_at TEXT, memory TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, timestamp TEXT)''')
+    
+    # Safely migrate the database by checking if the column exists
+    c.execute("PRAGMA table_info(messages)")
+    columns = [info[1] for info in c.fetchall()]
+    if "attachments" not in columns:
+        c.execute("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+        
+    conn.commit()
+    conn.close()
+    conn = sqlite3.connect('nova_chats.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS sessions
+                 (id TEXT PRIMARY KEY, title TEXT, updated_at TEXT, memory TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS messages
+                 (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, 
+                  attachments TEXT, timestamp TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def save_message(session_id: str, role: str, content: str):
+def save_message(session_id: str, role: str, content: str, attachments: list = None):
     conn = sqlite3.connect('nova_chats.db')
     c = conn.cursor()
     msg_id = str(uuid.uuid4())
     timestamp = datetime.now().isoformat()
-    c.execute("INSERT INTO messages VALUES (?, ?, ?, ?, ?)", (msg_id, session_id, role, content, timestamp))
+    attachments_json = json.dumps(attachments or [])
+    
+    # FIX: Explicitly name the columns so the order matches perfectly
+    c.execute("""INSERT INTO messages (id, session_id, role, content, attachments, timestamp) 
+                 VALUES (?, ?, ?, ?, ?, ?)""", 
+              (msg_id, session_id, role, content, attachments_json, timestamp))
     conn.commit()
     conn.close()
 
@@ -87,7 +110,14 @@ async def chat_endpoint(request: ChatRequest):
     session_id = request.session_id
     
     update_session(session_id)
-    save_message(session_id, "user", request.prompt or "Attached a file.")
+    attachments = []
+    if request.image_b64:
+        data_url = request.image_b64 if request.image_b64.startswith("data:") else f"data:image/png;base64,{request.image_b64}"
+        attachments.append({"type": "image", "data": data_url})
+    if request.pdf_b64:
+        attachments.append({"type": "file", "mime": "application/pdf", "data": request.pdf_b64})
+        
+    save_message(session_id, "user", request.prompt or "Attached file.", attachments=attachments)
     
     if session_id not in active_sessions:
         active_sessions[session_id] = NovaAgent()
@@ -102,7 +132,46 @@ async def chat_endpoint(request: ChatRequest):
                     full_response += chunk
                     yield chunk
             
-            save_message(session_id, "assistant", full_response)
+            # FIX: Clean the hidden tags out BEFORE saving to the database
+            clean_response = re.sub(r'\[\[TOOL_RUNNING:.*?\]\]', '', full_response)
+            save_message(session_id, "assistant", clean_response, attachments=[])
+            
+            update_session(session_id, memory=agent.get_session_summary())
+            
+        except Exception as e:
+            yield f"\n\n[Backend Error]: {str(e)}"
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
+@app.post("/api/chat/regenerate")
+async def regenerate_endpoint(request: ChatRequest):
+    session_id = request.session_id
+    update_session(session_id)
+    
+    
+    if session_id not in active_sessions:
+        active_sessions[session_id] = NovaAgent()
+        
+    agent = active_sessions[session_id]
+    
+    if len(agent.conversation_history) >= 2:
+        if agent.conversation_history[-1]["role"] == "assistant":
+            agent.conversation_history.pop()
+        if agent.conversation_history[-1]["role"] == "user":
+            agent.conversation_history.pop()
+
+    def generate():
+        full_response = ""
+        try:
+            for chunk in agent.chat_stream(request.prompt, request.image_b64, request.pdf_b64, request.super_nova):
+                if chunk:
+                    full_response += chunk
+                    yield chunk
+            
+            import re
+            clean_response = re.sub(r'\[\[TOOL_RUNNING:.*?\]\]', '', full_response)
+            
+            save_message(session_id, "assistant", clean_response, attachments=[])
             update_session(session_id, memory=agent.get_session_summary())
             
         except Exception as e:
@@ -155,18 +224,28 @@ def get_sessions():
 def get_chat_history(session_id: str):
     conn = sqlite3.connect('nova_chats.db')
     c = conn.cursor()
-    c.execute("SELECT id, role, content, timestamp FROM messages WHERE session_id=? ORDER BY timestamp ASC", (session_id,))
-    messages = [{"id": row[0], "role": row[1], "content": row[2], "timestamp": row[3]} for row in c.fetchall()]
-    conn.close()
+    c.execute("SELECT id, role, content, attachments, timestamp FROM messages WHERE session_id=? ORDER BY timestamp ASC", (session_id,))
     
-    if session_id not in active_sessions and messages:
-        agent = NovaAgent()
-        history = [{"role": "system", "content": agent.conversation_history[0]["content"]}]
-        for msg in messages[-10:]:
-            history.append({"role": msg["role"], "content": msg["content"]})
-        agent.conversation_history = history
-        active_sessions[session_id] = agent
-        
+    # FIX: Safe JSON parser to handle the corrupted old rows gracefully
+    def parse_attachments(val):
+        if not val:
+            return []
+        try:
+            return json.loads(val)
+        except Exception:
+            return [] # Fallback for corrupted rows
+
+    messages = [
+        {
+            "id": row[0],
+            "role": row[1],
+            "content": row[2],
+            "attachments": parse_attachments(row[3]),
+            "timestamp": row[4]
+        }
+        for row in c.fetchall()
+    ]
+    conn.close()
     return {"messages": messages}
 
 @app.get("/api/memory/{session_id}")

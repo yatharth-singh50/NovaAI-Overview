@@ -24,6 +24,10 @@ def search_the_web(query: str) -> str:
         return json.dumps({"error": f"Search failed: {str(e)}", "results": []})
 
 def save_to_memory(information: str) -> str:
+    """
+    Saves a permanent fact or user preference. 
+    CRITICAL: 'information' MUST be a complete, detailed sentence with context (e.g., 'The user has a meeting on Tuesday, Oct 5th at 3 PM' instead of 'meeting tuesday').
+    """
     try:
         with open("memory.txt", "a", encoding="utf-8") as f:
             f.write(f"\n- {information}")
@@ -115,19 +119,19 @@ def message_discord(username: str, message: str = "") -> str:
     except Exception as e:
         return json.dumps({"error": f"Discord failed: {str(e)}"})
 
-def draft_gmail(to_email: str, subject: str, body: str, chrome_profile: str = "") -> str:
-    print(f"\n[Nova Actuator: Drafting Gmail to '{to_email}']")
+def dispatch_gmail(to_email: str, subject: str, body: str, chrome_profile: str = "") -> str:
+    """Physically opens Chrome, drafts, and sends the email in one continuous action."""
+    body = body.replace("[[CONFIRM_SEND]]", "").replace("[[CONFIRM_SEND]]\n", "").strip()
+    print(f"\n[Nova Actuator: Dispatching Gmail to '{to_email}']")
     try:
         if chrome_profile:
-            cmd = f'start chrome "https://mail.google.com" --profile-directory="{chrome_profile}"'
-            os.system(cmd)
+            os.system(f'start chrome "https://mail.google.com" --profile-directory="{chrome_profile}"')
         else:
-            cmd = 'start chrome "https://mail.google.com"'
-            os.system(cmd)
+            os.system('start chrome "https://mail.google.com"')
             
-        time.sleep(3.0) 
+        time.sleep(5.0) 
         button_cords = None
-        for attempt in range(20):
+        for attempt in range(15):
             time.sleep(1)
             try:
                 button_cords = pyautogui.locateCenterOnScreen('templates/gmail_compose.png', confidence=0.8)
@@ -141,33 +145,29 @@ def draft_gmail(to_email: str, subject: str, body: str, chrome_profile: str = ""
         pyautogui.click()
         time.sleep(2.5) 
         
+        # Paste To, Subject, and Body
         subprocess.run("clip", text=True, input=to_email)
         time.sleep(0.2); pyautogui.hotkey('ctrl', 'v'); time.sleep(0.5); pyautogui.press('enter'); time.sleep(0.5); pyautogui.press('tab') 
         subprocess.run("clip", text=True, input=subject)
         time.sleep(0.2); pyautogui.hotkey('ctrl', 'v'); time.sleep(0.5); pyautogui.press('tab') 
         subprocess.run("clip", text=True, input=body)
-        time.sleep(0.2); pyautogui.hotkey('ctrl', 'v')
+        time.sleep(0.2); pyautogui.hotkey('ctrl', 'v'); time.sleep(1.0)
         
-        return json.dumps({"status": "success", "message": "Email drafted successfully. DO NOT SEND IT YET. Ask the user to confirm."})
+        # Click Send (or fallback to keyboard shortcut)
+        try:
+            send_cords = pyautogui.locateCenterOnScreen('templates/gmail_send.png', confidence=0.8)
+            if send_cords:
+                pyautogui.moveTo(send_cords.x, send_cords.y, duration=0.2)
+                pyautogui.click()
+            else:
+                pyautogui.hotkey('ctrl', 'enter')
+        except Exception:
+            pyautogui.hotkey('ctrl', 'enter')
+            
+        return json.dumps({"status": "success", "message": "Email composed and dispatched successfully."})
     except Exception as e:
-        return json.dumps({"error": f"Failed to draft email: {str(e)}"})
-
-def send_gmail() -> str:
-    print("\n[Nova Actuator: Locating Gmail Send button...]")
-    try:
-        for attempt in range(5):
-            time.sleep(1)
-            try:
-                button_cords = pyautogui.locateCenterOnScreen('templates/gmail_send.png', confidence=0.8)
-                if button_cords:
-                    pyautogui.moveTo(button_cords.x, button_cords.y, duration=0.2)
-                    pyautogui.click()
-                    return json.dumps({"status": "success", "message": "The email has been sent successfully."})
-            except Exception: pass
-        return json.dumps({"error": "Could not locate the Send button."})
-    except Exception as e:
-        return json.dumps({"error": f"Failed to send email: {str(e)}"})
-
+        return json.dumps({"error": f"Failed to dispatch email: {str(e)}"})
+    
 # execute_os_action is now strictly for the browser and generic apps
 def execute_os_action(action: str, target: str, payload: str = "") -> str:
     """
@@ -262,6 +262,5 @@ AVAILABLE_TOOLS = {
     "type_in_notepad": type_in_notepad, 
     "play_spotify": play_spotify,
     "message_discord": message_discord,
-    "draft_gmail": draft_gmail,
-    "send_gmail": send_gmail,
+    "dispatch_gmail": dispatch_gmail,
 }

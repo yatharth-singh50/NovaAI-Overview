@@ -4,7 +4,7 @@ import json
 import base64
 import fitz  # PyMuPDF
 from datetime import datetime
-from tools import AVAILABLE_TOOLS, search_the_web, scrape_webpage, check_system_status, search_images, search_news, get_system_telemetry, execute_os_action, save_to_memory, run_terminal_command, type_in_notepad, draft_gmail, send_gmail, play_spotify, message_discord
+from tools import AVAILABLE_TOOLS, search_the_web, scrape_webpage, check_system_status, search_images, search_news, get_system_telemetry, execute_os_action, save_to_memory, run_terminal_command, type_in_notepad, dispatch_gmail, play_spotify, message_discord
 
 FAST_MODEL = "qwen2.5:3b" 
 DEEP_MODEL = "llama3.1:8b" # SUPERNOVA
@@ -27,6 +27,11 @@ PERSONALITY & TONE:
 * You may occasionally use light sarcasm, dry humor, or witty remarks when appropriate, but never at the user's expense.
 * Remain calm and composed during troubleshooting, research, and problem-solving.
 
+VERBOSITY & DEPTH (CRITICAL RULE):
+* For quick OS commands (e.g., opening apps, sending emails), be extremely concise and direct.
+* For informational queries, research, analysis, or when asked to "explain", you MUST provide exhaustive, detailed, and comprehensive multi-paragraph responses. 
+* Never reply with a brief summary for a research topic. Synthesize the data deeply.
+
 COMMUNICATION STYLE:
 * Lead with the answer. Be concise when the task is simple.
 * Be detailed when additional detail improves the outcome.
@@ -42,13 +47,21 @@ STRICT ACCURACY RULE:
 * DO NOT autocorrect specific nouns in search queries.
 * ALWAYS prefer latest data.
 
+CITATION & SOURCE RULES:
+* When using information retrieved from `search_the_web` or `search_news`, you MUST cite sources inline using standard Markdown links: [Source Name](URL).
+* NEVER use plain numeric brackets like "[1]" or "[2]" without linking them.
+* STRICT BAN: Do NOT output a "Sources", "References", or "Further Reading" list at the bottom of your response. The system UI handles bibliography automatically. Focus 100% of your output on the explanation.
+
 TOOL DISCIPLINE & OS CONTROL:
 1. NEVER trigger OS tools UNLESS explicitly commanded.
 2. TRANSLATION RULE: ONLY provide the direct translation. DO NOT explain acronyms.
 3. `play_spotify`: Use this to play a specific song on Spotify.
 4. `message_discord`: Use this to open Discord and message someone.
 5. `type_in_notepad`: Use this to open Notepad and write text/code.
-6. `draft_gmail` / `send_gmail`: Use these to draft and send emails (always ask for confirmation before sending).
+6. `dispatch_gmail`: Use this to physically open Chrome, compose, and send an email. 
+   - PROTOCOL: You must FIRST propose the Subject and Body as standard text in the chat. Do NOT call the tool yet.
+   - Append the EXACT tag `[[CONFIRM_SEND]]` at the end of your proposal.
+   - Wait. When the user explicitly approves the draft, ONLY THEN execute `dispatch_gmail`.
 7. `execute_os_action`: Use this ONLY to search the browser or launch Google Chrome.
   - If opening a specific Chrome profile, check CORE USER MEMORY. If unknown, ask the user for the profile name and use `save_to_memory`.
 8. CLOSING RULE: After you successfully use a tool, you MUST output a final conversational message. Never output an empty string.
@@ -85,6 +98,10 @@ class NovaAgent:
 
     def chat_stream(self, user_input: str, image_b64: str = None, pdf_b64: str = None, use_supernova: bool = False):
         active_model = DEEP_MODEL if use_supernova else FAST_MODEL
+
+        # --- NEW: Push SuperNova to be highly analytical ---
+        if use_supernova:
+            user_input = f"[SYSTEM ALERT: You are running in SuperNova Deep Reasoning mode. You must provide a highly detailed, nuanced, and exhaustive analysis of the following prompt.]\n\n{user_input}"
 
         # Handle PDF Extraction seamlessly in memory
         if pdf_b64:
@@ -141,13 +158,14 @@ class NovaAgent:
         try:
             max_research_depth = 10
             depth = 0
+            captured_sources = [] # NEW: Array to store sources for the failsafe
             
             while depth < max_research_depth:
                 print(f"\n[Nova VRAM Manager: Waking up '{active_model}'...]")
                 response = ollama.chat(
                     model=active_model,
                     messages=self.conversation_history,
-                    tools=[search_the_web, scrape_webpage, check_system_status, search_images, search_news, get_system_telemetry, execute_os_action, save_to_memory, run_terminal_command, type_in_notepad, draft_gmail, send_gmail, play_spotify, message_discord],
+                    tools=[search_the_web, scrape_webpage, check_system_status, search_images, search_news, get_system_telemetry, execute_os_action, save_to_memory, run_terminal_command, type_in_notepad, dispatch_gmail, play_spotify, message_discord],
                     options={
                         "num_ctx": 4096 if use_supernova else 3072,
                         "num_predict": 1024,
@@ -158,20 +176,54 @@ class NovaAgent:
                 if response.message.tool_calls:
                     self.conversation_history.append(response.message)
                     for tool in response.message.tool_calls:
+                        yield f"[[TOOL_RUNNING:{tool.function.name}]]"
+                    
+                    # --- NEW: Parallel Tool Execution & Hot-Reloading ---
+                    def execute_tool(tool):
                         func_name = tool.function.name
                         func_args = tool.function.arguments
+                        
+                        # --- 🛡️ HUMAN-IN-THE-LOOP (HITL) INTERCEPTOR ---
+                        # If the AI tries to send an email, but you haven't clicked the "Send Now" button yet:
+                        if func_name == "dispatch_gmail" and "execute the dispatch_gmail tool" not in user_input:
+                            print("\n[Nova Middleware: Blocked unauthorized email dispatch. Forcing draft presentation.]")
+                            fake_output = json.dumps({
+                                "status": "draft_prepared_but_NOT_sent",
+                                "instruction": "STOP calling tools. The email was NOT sent. Present the To, Subject, and Body text to the user in the chat. Then, add EXACTLY [[CONFIRM_SEND]] at the very end of your conversational response. DO NOT include the tag inside the actual email body."
+                            })
+                            return {"role": "tool", "name": func_name, "content": fake_output}
+                        # ------------------------------------------------
+                        
                         if func_name in AVAILABLE_TOOLS:
-                            tool_output = AVAILABLE_TOOLS[func_name](**func_args)
-                        else:
-                            tool_output = json.dumps({"error": f"Tool '{func_name}' not found."})
+                            output = AVAILABLE_TOOLS[func_name](**func_args)
                             
-                        self.conversation_history.append({
-                            "role": "tool",
-                            "name": func_name,
-                            "content": tool_output,
-                        })
+                            # 1. Hot-Reload Memory Fix
+                            if func_name == "save_to_memory" and "Successfully" in output:
+                                self.conversation_history[0]["content"] += f"\n- {func_args.get('information', '')}"
+                                
+                            # 2. Capture Sources for Failsafe
+                            if func_name in ["search_the_web", "search_news"]:
+                                try:
+                                    raw_res = json.loads(output)
+                                    items = raw_res.get("results") or raw_res.get("news_results") or []
+                                    for item in items[:3]:
+                                        captured_sources.append(f"- [{item.get('title', 'Source')}]({item.get('url', '')})")
+                                except Exception: pass
+                                
+                        else:
+                            output = json.dumps({"error": f"Tool '{func_name}' not found."})
+                            
+                        return {"role": "tool", "name": func_name, "content": output}
+
+                    # Execute all tool calls concurrently
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        results = list(executor.map(execute_tool, response.message.tool_calls))
+                        
+                    self.conversation_history.extend(results)
                     depth += 1
                     continue
+                    # ----------------------------------------------------
                 else:
                     final_text = response.message.content or ""
                     self.conversation_history.append(response.message)
@@ -181,6 +233,13 @@ class NovaAgent:
                             final_text = "Done! I have completed the requested action."
                         else:
                             final_text = "⚠️ Context limits hit. Try a 'New Chat'."
+
+                    # --- NEW: Citation Failsafe Injection ---
+                    # If the model forgot to output URLs but we captured some, append them automatically
+                    if captured_sources and "http" not in final_text:
+                        unique_sources = list(dict.fromkeys(captured_sources)) # Remove duplicates
+                        final_text += "\n\n### Sources\n" + "\n".join(unique_sources)
+                    # ----------------------------------------
 
                     chunk_size = 20
                     for i in range(0, len(final_text), chunk_size):
